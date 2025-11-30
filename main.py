@@ -6,6 +6,8 @@ import os
 from datetime import datetime, timedelta
 import pytz
 from typing import List, Optional
+from flask import Flask
+from threading import Thread
 
 # Bot setup
 intents = discord.Intents.all()
@@ -951,6 +953,25 @@ async def on_bulk_message_delete(messages):
         
         await log_channel.send(embed=embed)
 
+# Flask keep-alive server for Render
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "✅ Discord Bot is running!"
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "bot": str(bot.user) if bot.user else "starting"}
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+
 # Run the bot
 if __name__ == "__main__":
     TOKEN = os.getenv('DISCORD_TOKEN')
@@ -958,4 +979,5 @@ if __name__ == "__main__":
         print("❌ Error: DISCORD_TOKEN environment variable not set!")
         exit(1)
     
+    keep_alive()  # Start Flask server
     bot.run(TOKEN)
