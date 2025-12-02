@@ -269,7 +269,7 @@ async def on_message_delete(message):
         pass
     
     fields = [
-        {"name": "👤 Author", "value": f"{message.author.mention} ({message.author})", "inline": False},
+        {"name": "👤 Author", "value": f"{message.author.mention} ({message.author})", inline=False},
         {"name": "📍 Channel", "value": message.channel.mention, "inline": True},
         {"name": "⏰ Message Age", "value": format_duration(int(message_age.total_seconds())), "inline": True}
     ]
