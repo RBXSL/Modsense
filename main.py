@@ -559,7 +559,7 @@ async def on_bulk_message_delete(messages):
             embed.add_field(name="📍 Channel", value=messages[0].channel.mention if messages else "Unknown", inline=False)
             
             if executor:
-                embed.add_field(name="🗑️ Purged By", "value": f"{executor.mention} ({executor})", "inline": False)
+                embed.add_field(name="🗑️ Purged By", value=f"{executor.mention} ({executor})", inline=False)
             
             embed.add_field(name="📄 Full Log", "value": "See attached file for complete message history", "inline": False)
             
