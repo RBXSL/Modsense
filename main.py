@@ -56,6 +56,7 @@ bot_data = load_data()
 # Helper functions
 def get_user_data(user_id: int):
     user_id_str = str(user_id)
+    now = datetime.now(pytz.utc)
     if user_id_str not in bot_data['users']:
         bot_data['users'][user_id_str] = {
             'last_online': None,
@@ -67,9 +68,9 @@ def get_user_data(user_id: int):
             'weekly_seconds': 0,
             'monthly_seconds': 0,
             'last_reset': {
-                'daily': datetime.now(pytz.utc).isoformat(),
-                'weekly': datetime.now(pytz.utc).isoformat(),
-                'monthly': datetime.now(pytz.utc).isoformat()
+                'daily': now.isoformat(),
+                'weekly': now.isoformat(),
+                'monthly': now.isoformat()
             },
             'offline_start': None
         }
@@ -123,6 +124,25 @@ def format_time_in_timezones(dt: datetime) -> str:
         lines.append(f"**{name}:** {local_time.strftime('%Y-%m-%d %I:%M:%S %p')}")
     return "\n".join(lines)
 
+def get_next_reset_times(user_data: dict) -> dict:
+    """Calculate when the next resets will occur"""
+    now = datetime.now(pytz.utc)
+    last_resets = user_data.get('last_reset', {})
+    
+    daily_last = datetime.fromisoformat(last_resets.get('daily', now.isoformat()))
+    weekly_last = datetime.fromisoformat(last_resets.get('weekly', now.isoformat()))
+    monthly_last = datetime.fromisoformat(last_resets.get('monthly', now.isoformat()))
+    
+    daily_next = daily_last + timedelta(days=1)
+    weekly_next = weekly_last + timedelta(weeks=1)
+    monthly_next = monthly_last + timedelta(days=30)
+    
+    return {
+        'daily': daily_next,
+        'weekly': weekly_next,
+        'monthly': monthly_next
+    }
+
 async def send_dm_safe(user: discord.User, embed: discord.Embed):
     if str(user.id) in bot_data['rdm_users']:
         return
@@ -130,6 +150,53 @@ async def send_dm_safe(user: discord.User, embed: discord.Embed):
         await user.send(embed=embed)
     except:
         pass
+
+async def log_action(title: str, description: str = None, color: discord.Color = discord.Color.blue(), fields: list = None, dangerous: bool = False):
+    """Central logging function for all bot actions"""
+    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
+    if not log_channel:
+        return
+    
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=datetime.now(pytz.utc)
+    )
+    
+    if fields:
+        for field in fields:
+            embed.add_field(name=field['name'], value=field['value'], inline=field.get('inline', False))
+    
+    await log_channel.send(embed=embed)
+    
+    # Send to dangerous log users if flagged
+    if dangerous:
+        for user_id in DANGEROUS_LOG_USERS:
+            try:
+                user = await bot.fetch_user(user_id)
+                await user.send(embed=embed)
+            except:
+                pass
+
+# Flask keep-alive server for Render
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "✅ Discord Bot is running!"
+
+@app.route('/health')
+def health():
+    return {"status": "healthy", "bot": str(bot.user) if bot.user else "starting"}
+
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
 # Events
 @bot.event
@@ -152,21 +219,23 @@ async def on_message(message):
         'channel_id': message.channel.id
     }
     
-    # Cache message for deletion tracking
+    # Cache message for deletion tracking (including old messages)
     bot_data['cached_messages'].append({
         'id': message.id,
         'author_id': message.author.id,
+        'author_name': str(message.author),
         'content': message.content,
         'attachments': [att.url for att in message.attachments],
         'embeds': [e.to_dict() for e in message.embeds],
         'channel_id': message.channel.id,
         'timestamp': datetime.now(pytz.utc).isoformat(),
-        'reference': message.reference.message_id if message.reference else None
+        'reference': message.reference.message_id if message.reference else None,
+        'created_at': message.created_at.isoformat()
     })
     
-    # Keep only last 1000 messages
-    if len(bot_data['cached_messages']) > 1000:
-        bot_data['cached_messages'] = bot_data['cached_messages'][-1000:]
+    # Keep only last 2000 messages for better coverage
+    if len(bot_data['cached_messages']) > 2000:
+        bot_data['cached_messages'] = bot_data['cached_messages'][-2000:]
     
     save_data()
     await bot.process_commands(message)
@@ -176,25 +245,37 @@ async def on_message_delete(message):
     if message.author.bot:
         return
     
-    channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if not channel:
-        return
+    # Calculate message age
+    message_age = datetime.now(pytz.utc) - message.created_at.replace(tzinfo=pytz.utc)
     
     embed = discord.Embed(
         title="🗑️ Message Deleted",
         color=discord.Color.red(),
         timestamp=datetime.now(pytz.utc)
     )
-    embed.add_field(name="Author", value=f"{message.author.mention} ({message.author})", inline=False)
-    embed.add_field(name="Channel", value=message.channel.mention, inline=False)
+    embed.add_field(name="👤 Author", value=f"{message.author.mention} ({message.author})", inline=False)
+    embed.add_field(name="📍 Channel", value=message.channel.mention, inline=True)
+    embed.add_field(name="⏰ Message Age", value=format_duration(int(message_age.total_seconds())), inline=True)
     
     if message.content:
-        embed.add_field(name="Content", value=message.content[:1024], inline=False)
+        content = message.content[:1024]
+        embed.add_field(name="📝 Content", value=content, inline=False)
     
     if message.attachments:
-        embed.add_field(name="Attachments", value="\n".join([att.url for att in message.attachments]), inline=False)
+        attachments = "\n".join([att.url for att in message.attachments][:5])
+        embed.add_field(name="📎 Attachments", value=attachments, inline=False)
     
-    await channel.send(embed=embed)
+    if message.embeds:
+        embed.add_field(name="📊 Embeds", value=f"{len(message.embeds)} embed(s)", inline=False)
+    
+    embed.add_field(name="🕐 Deleted At", value=format_time_in_timezones(datetime.now(pytz.utc)), inline=False)
+    
+    await log_action(
+        title=embed.title,
+        description=embed.description,
+        color=embed.color,
+        fields=[{"name": f.name, "value": f.value, "inline": f.inline} for f in embed.fields]
+    )
 
 @bot.event
 async def on_message_edit(before, after):
@@ -204,8 +285,103 @@ async def on_message_edit(before, after):
     user_data = get_user_data(before.author.id)
     user_data['last_edit'] = datetime.now(pytz.utc).isoformat()
     save_data()
+    
+    # Log message edit
+    await log_action(
+        title="✏️ Message Edited",
+        color=discord.Color.orange(),
+        fields=[
+            {"name": "👤 Author", "value": f"{before.author.mention} ({before.author})", "inline": False},
+            {"name": "📍 Channel", "value": before.channel.mention, "inline": True},
+            {"name": "📝 Before", "value": before.content[:1024] if before.content else "No content", "inline": False},
+            {"name": "📝 After", "value": after.content[:1024] if after.content else "No content", "inline": False},
+            {"name": "🔗 Jump", "value": f"[View Message]({after.jump_url})", "inline": False}
+        ]
+    )
 
-# Timetrack loop
+@bot.event
+async def on_member_join(member):
+    await log_action(
+        title="👋 Member Joined",
+        color=discord.Color.green(),
+        fields=[
+            {"name": "👤 Member", "value": f"{member.mention} ({member})", "inline": False},
+            {"name": "🆔 User ID", "value": str(member.id), "inline": True},
+            {"name": "📅 Account Created", "value": member.created_at.strftime('%Y-%m-%d'), "inline": True},
+            {"name": "👥 Member Count", "value": str(member.guild.member_count), "inline": True}
+        ]
+    )
+
+@bot.event
+async def on_member_remove(member):
+    await log_action(
+        title="👋 Member Left",
+        color=discord.Color.red(),
+        fields=[
+            {"name": "👤 Member", "value": f"{member.mention} ({member})", "inline": False},
+            {"name": "🆔 User ID", "value": str(member.id), "inline": True},
+            {"name": "📅 Joined Server", "value": member.joined_at.strftime('%Y-%m-%d') if member.joined_at else "Unknown", "inline": True},
+            {"name": "👥 Member Count", "value": str(member.guild.member_count), "inline": True}
+        ]
+    )
+
+@bot.event
+async def on_member_update(before, after):
+    # Nickname change
+    if before.nick != after.nick:
+        await log_action(
+            title="✏️ Nickname Changed",
+            color=discord.Color.blue(),
+            fields=[
+                {"name": "👤 Member", "value": f"{after.mention} ({after})", "inline": False},
+                {"name": "📝 Old Nickname", "value": before.nick or "None", "inline": True},
+                {"name": "📝 New Nickname", "value": after.nick or "None", "inline": True}
+            ]
+        )
+    
+    # Role changes
+    if before.roles != after.roles:
+        added_roles = [role for role in after.roles if role not in before.roles]
+        removed_roles = [role for role in before.roles if role not in after.roles]
+        
+        fields = [{"name": "👤 Member", "value": f"{after.mention} ({after})", "inline": False}]
+        
+        if added_roles:
+            fields.append({"name": "➕ Roles Added", "value": ", ".join([r.mention for r in added_roles]), "inline": False})
+        
+        if removed_roles:
+            fields.append({"name": "➖ Roles Removed", "value": ", ".join([r.mention for r in removed_roles]), "inline": False})
+        
+        await log_action(
+            title="🎭 Member Roles Updated",
+            color=discord.Color.purple(),
+            fields=fields
+        )
+
+@bot.event
+async def on_member_ban(guild, user):
+    await log_action(
+        title="🔨 Member Banned",
+        color=discord.Color.dark_red(),
+        fields=[
+            {"name": "👤 User", "value": f"{user.mention} ({user})", "inline": False},
+            {"name": "🆔 User ID", "value": str(user.id), "inline": True}
+        ],
+        dangerous=True
+    )
+
+@bot.event
+async def on_member_unban(guild, user):
+    await log_action(
+        title="🔓 Member Unbanned",
+        color=discord.Color.green(),
+        fields=[
+            {"name": "👤 User", "value": f"{user.mention} ({user})", "inline": False},
+            {"name": "🆔 User ID", "value": str(user.id), "inline": True}
+        ]
+    )
+
+# Timetrack loop with fixed tracking
 @tasks.loop(seconds=60)
 async def timetrack_loop():
     guild = bot.get_guild(GUILD_ID)
@@ -234,8 +410,7 @@ async def timetrack_loop():
             if time_since_msg <= 53:
                 # User is online
                 if user_data.get('online_start'):
-                    # Already online, continue counting
-                    session_duration = int((now - datetime.fromisoformat(user_data['online_start'])).total_seconds())
+                    # Already online, continue counting - ADD 60 seconds each loop
                     user_data['total_online_seconds'] += 60
                     user_data['daily_seconds'] += 60
                     user_data['weekly_seconds'] += 60
@@ -401,16 +576,25 @@ async def timetrack(ctx, member: discord.Member = None):
             inline=False
         )
     
-    # Time stats
+    # Time stats - NOW SHOWING PROPERLY
     total = user_data.get('total_online_seconds', 0)
     daily = user_data.get('daily_seconds', 0)
     weekly = user_data.get('weekly_seconds', 0)
     monthly = user_data.get('monthly_seconds', 0)
     
-    embed.add_field(name="📊 Total Time Online", value=format_duration(total), inline=True)
-    embed.add_field(name="📅 Daily", value=format_duration(daily) if daily > 0 else format_duration(total), inline=True)
-    embed.add_field(name="📆 Weekly", value=format_duration(weekly) if weekly > 0 else format_duration(total), inline=True)
-    embed.add_field(name="📈 Monthly", value=format_duration(monthly) if monthly > 0 else format_duration(total), inline=True)
+    embed.add_field(name="📊 Total Time Online (All Time)", value=format_duration(total), inline=False)
+    embed.add_field(name="📅 Today", value=format_duration(daily), inline=True)
+    embed.add_field(name="📆 This Week", value=format_duration(weekly), inline=True)
+    embed.add_field(name="📈 This Month", value=format_duration(monthly), inline=True)
+    
+    # Next reset times
+    next_resets = get_next_reset_times(user_data)
+    reset_info = []
+    for period, reset_time in next_resets.items():
+        time_until = reset_time - now
+        reset_info.append(f"**{period.capitalize()}:** {format_duration(int(time_until.total_seconds()))}")
+    
+    embed.add_field(name="🔄 Next Resets In", value="\n".join(reset_info), inline=False)
     
     await ctx.send(embed=embed)
 
@@ -639,19 +823,28 @@ async def rcache(ctx):
     )
     
     for msg in recent_messages:
-        author = await bot.fetch_user(msg['author_id'])
-        field_value = f"**Author:** {author.mention}\n"
+        try:
+            author = await bot.fetch_user(msg['author_id'])
+            field_value = f"**Author:** {author.mention}\n"
+        except:
+            field_value = f"**Author:** {msg.get('author_name', 'Unknown')}\n"
         
         if msg.get('content'):
             field_value += f"**Content:** {msg['content'][:100]}\n"
         
         if msg.get('attachments'):
-            field_value += f"**Attachments:** {', '.join(msg['attachments'])}\n"
+            field_value += f"**Attachments:** {', '.join(msg['attachments'][:3])}\n"
         
         if msg.get('reference'):
             field_value += f"**Reply to:** Message ID {msg['reference']}\n"
         
-        embed.add_field(name=f"Message {msg['id']}", value=field_value, inline=False)
+        # Show message age
+        if msg.get('created_at'):
+            created = datetime.fromisoformat(msg['created_at'])
+            age = datetime.now(pytz.utc) - created.replace(tzinfo=pytz.utc)
+            field_value += f"**Age:** {format_duration(int(age.total_seconds()))}\n"
+        
+        embed.add_field(name=f"Message {msg['id']}", value=field_value[:1024], inline=False)
     
     await ctx.send(embed=embed)
 
@@ -671,7 +864,7 @@ async def tlb(ctx):
     
     embed = discord.Embed(
         title="🏆 Timetrack Leaderboard (Tracked Roles)",
-        description="Top 10 users by daily average online time",
+        description="Top 10 users by daily online time",
         color=discord.Color.blue(),
         timestamp=datetime.now(pytz.utc)
     )
@@ -679,7 +872,7 @@ async def tlb(ctx):
     for i, (member, seconds) in enumerate(tracked_users, 1):
         embed.add_field(
             name=f"#{i} {member.display_name}",
-            value=f"⏰ {format_duration(seconds)} daily average",
+            value=f"⏰ {format_duration(seconds)} today",
             inline=False
         )
     
@@ -704,7 +897,7 @@ async def tdm(ctx):
     
     embed = discord.Embed(
         title="🏆 Timetrack Leaderboard (Non-Tracked Roles)",
-        description="Top 10 users by daily average online time",
+        description="Top 10 users by daily online time",
         color=discord.Color.purple(),
         timestamp=datetime.now(pytz.utc)
     )
@@ -712,7 +905,7 @@ async def tdm(ctx):
     for i, (member, seconds) in enumerate(untracked_users, 1):
         embed.add_field(
             name=f"#{i} {member.display_name}",
-            value=f"⏰ {format_duration(seconds)} daily average",
+            value=f"⏰ {format_duration(seconds)} today",
             inline=False
         )
     
@@ -835,142 +1028,159 @@ async def rdm(ctx):
 # Additional event handlers for logging
 @bot.event
 async def on_guild_channel_create(channel):
-    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="📝 Channel Created",
-            color=discord.Color.green(),
-            timestamp=datetime.now(pytz.utc)
-        )
-        embed.add_field(name="Channel", value=channel.mention, inline=False)
-        embed.add_field(name="Channel Type", value=str(channel.type), inline=True)
-        await log_channel.send(embed=embed)
+    await log_action(
+        title="📝 Channel Created",
+        color=discord.Color.green(),
+        fields=[
+            {"name": "Channel", "value": channel.mention, "inline": False},
+            {"name": "Channel Type", "value": str(channel.type), "inline": True},
+            {"name": "Channel ID", "value": str(channel.id), "inline": True}
+        ]
+    )
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="🗑️ Channel Deleted",
-            color=discord.Color.red(),
-            timestamp=datetime.now(pytz.utc)
-        )
-        embed.add_field(name="Channel Name", value=channel.name, inline=False)
-        embed.add_field(name="Channel Type", value=str(channel.type), inline=True)
-        await log_channel.send(embed=embed)
+    await log_action(
+        title="🗑️ Channel Deleted",
+        color=discord.Color.red(),
+        fields=[
+            {"name": "Channel Name", "value": channel.name, "inline": False},
+            {"name": "Channel Type", "value": str(channel.type), "inline": True},
+            {"name": "Channel ID", "value": str(channel.id), "inline": True}
+        ],
+        dangerous=True
+    )
 
 @bot.event
 async def on_guild_channel_update(before, after):
+    changes = []
+    
     if before.name != after.name:
-        log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-        if log_channel:
-            embed = discord.Embed(
-                title="✏️ Channel Updated",
-                color=discord.Color.orange(),
-                timestamp=datetime.now(pytz.utc)
-            )
-            embed.add_field(name="Channel", value=after.mention, inline=False)
-            embed.add_field(name="Old Name", value=before.name, inline=True)
-            embed.add_field(name="New Name", value=after.name, inline=True)
-            await log_channel.send(embed=embed)
+        changes.append(f"**Name:** {before.name} → {after.name}")
+    
+    if hasattr(before, 'topic') and hasattr(after, 'topic') and before.topic != after.topic:
+        changes.append(f"**Topic Changed**")
+    
+    if before.category != after.category:
+        before_cat = before.category.name if before.category else "None"
+        after_cat = after.category.name if after.category else "None"
+        changes.append(f"**Category:** {before_cat} → {after_cat}")
+    
+    # Check permission overwrites
+    if before.overwrites != after.overwrites:
+        changes.append("**Permissions Modified**")
+    
+    if changes:
+        await log_action(
+            title="✏️ Channel Updated",
+            color=discord.Color.orange(),
+            fields=[
+                {"name": "Channel", "value": after.mention, "inline": False},
+                {"name": "Changes", "value": "\n".join(changes), "inline": False}
+            ]
+        )
 
 @bot.event
 async def on_guild_role_create(role):
-    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="🎭 Role Created",
-            color=discord.Color.green(),
-            timestamp=datetime.now(pytz.utc)
-        )
-        embed.add_field(name="Role", value=role.mention, inline=False)
-        embed.add_field(name="Role ID", value=str(role.id), inline=True)
-        await log_channel.send(embed=embed)
+    await log_action(
+        title="🎭 Role Created",
+        color=discord.Color.green(),
+        fields=[
+            {"name": "Role", "value": role.mention, "inline": False},
+            {"name": "Role ID", "value": str(role.id), "inline": True},
+            {"name": "Color", "value": str(role.color), "inline": True}
+        ]
+    )
 
 @bot.event
 async def on_guild_role_delete(role):
-    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="🗑️ Role Deleted",
-            color=discord.Color.red(),
-            timestamp=datetime.now(pytz.utc)
-        )
-        embed.add_field(name="Role Name", value=role.name, inline=False)
-        embed.add_field(name="Role ID", value=str(role.id), inline=True)
-        await log_channel.send(embed=embed)
+    await log_action(
+        title="🗑️ Role Deleted",
+        color=discord.Color.red(),
+        fields=[
+            {"name": "Role Name", "value": role.name, "inline": False},
+            {"name": "Role ID", "value": str(role.id), "inline": True}
+        ],
+        dangerous=True
+    )
 
 @bot.event
 async def on_guild_role_update(before, after):
-    if before.name != after.name or before.permissions != after.permissions:
-        log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-        if log_channel:
-            embed = discord.Embed(
-                title="✏️ Role Updated",
-                color=discord.Color.orange(),
-                timestamp=datetime.now(pytz.utc)
-            )
-            embed.add_field(name="Role", value=after.mention, inline=False)
-            
-            if before.name != after.name:
-                embed.add_field(name="Old Name", value=before.name, inline=True)
-                embed.add_field(name="New Name", value=after.name, inline=True)
-            
-            if before.permissions != after.permissions:
-                embed.add_field(name="Permissions Changed", value="✓", inline=False)
-            
-            await log_channel.send(embed=embed)
+    changes = []
+    
+    if before.name != after.name:
+        changes.append(f"**Name:** {before.name} → {after.name}")
+    
+    if before.color != after.color:
+        changes.append(f"**Color:** {before.color} → {after.color}")
+    
+    if before.permissions != after.permissions:
+        changes.append("**Permissions Modified**")
+    
+    if before.hoist != after.hoist:
+        changes.append(f"**Display Separately:** {before.hoist} → {after.hoist}")
+    
+    if before.mentionable != after.mentionable:
+        changes.append(f"**Mentionable:** {before.mentionable} → {after.mentionable}")
+    
+    if changes:
+        await log_action(
+            title="✏️ Role Updated",
+            color=discord.Color.orange(),
+            fields=[
+                {"name": "Role", "value": after.mention, "inline": False},
+                {"name": "Changes", "value": "\n".join(changes), "inline": False}
+            ]
+        )
 
 @bot.event
 async def on_bulk_message_delete(messages):
-    log_channel = bot.get_channel(MUTE_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(
-            title="🗑️ Bulk Message Delete (Purge)",
-            description=f"{len(messages)} messages were deleted",
-            color=discord.Color.red(),
-            timestamp=datetime.now(pytz.utc)
+    message_info = []
+    for msg in list(messages)[:10]:
+        if not msg.author.bot:
+            message_info.append(f"**{msg.author}**: {msg.content[:100]}")
+    
+    await log_action(
+        title="🗑️ Bulk Message Delete (Purge)",
+        description=f"{len(messages)} messages were deleted",
+        color=discord.Color.red(),
+        fields=[
+            {"name": "Channel", "value": messages[0].channel.mention if messages else "Unknown", "inline": False},
+            {"name": "Sample Messages", "value": "\n".join(message_info) if message_info else "No content", "inline": False}
+        ],
+        dangerous=True
+    )
+
+@bot.event
+async def on_guild_update(before, after):
+    changes = []
+    
+    if before.name != after.name:
+        changes.append(f"**Name:** {before.name} → {after.name}")
+    
+    if before.owner != after.owner:
+        changes.append(f"**Owner:** {before.owner.mention} → {after.owner.mention}")
+    
+    if before.verification_level != after.verification_level:
+        changes.append(f"**Verification Level:** {before.verification_level} → {after.verification_level}")
+    
+    if changes:
+        await log_action(
+            title="⚙️ Server Settings Updated",
+            color=discord.Color.blue(),
+            fields=[{"name": "Changes", "value": "\n".join(changes), "inline": False}],
+            dangerous=True
         )
-        
-        # Log first few messages
-        message_info = []
-        for msg in list(messages)[:5]:
-            if not msg.author.bot:
-                message_info.append(f"**{msg.author}**: {msg.content[:100]}")
-        
-        if message_info:
-            embed.add_field(name="Sample Messages", value="\n".join(message_info), inline=False)
-        
-        embed.add_field(name="Channel", value=messages[0].channel.mention if messages else "Unknown", inline=False)
-        
-        # Send to dangerous log users
-        for user_id in DANGEROUS_LOG_USERS:
-            user = await bot.fetch_user(user_id)
-            try:
-                await user.send(embed=embed)
-            except:
-                pass
-        
-        await log_channel.send(embed=embed)
 
-# Flask keep-alive server for Render
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "✅ Discord Bot is running!"
-
-@app.route('/health')
-def health():
-    return {"status": "healthy", "bot": str(bot.user) if bot.user else "starting"}
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+@bot.event
+async def on_webhooks_update(channel):
+    await log_action(
+        title="🔗 Webhook Updated",
+        color=discord.Color.orange(),
+        fields=[
+            {"name": "Channel", "value": channel.mention, "inline": False}
+        ]
+    )
 
 # Run the bot
 if __name__ == "__main__":
