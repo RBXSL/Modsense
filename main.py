@@ -556,7 +556,7 @@ async def on_bulk_message_delete(messages):
                 color=discord.Color.red(),
                 timestamp=datetime.now(pytz.utc)
             )
-            embed.add_field(name="📍 Channel", "value": messages[0].channel.mention if messages else "Unknown", "inline": False)
+            embed.add_field(name="📍 Channel", value=messages[0].channel.mention if messages else "Unknown", inline=False)
             
             if executor:
                 embed.add_field(name="🗑️ Purged By", "value": f"{executor.mention} ({executor})", "inline": False)
