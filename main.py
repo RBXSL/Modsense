@@ -637,7 +637,7 @@ async def timetrack_loop():
                             timestamp=now
                         )
                         embed.set_author(name=str(member), icon_url=member.display_avatar.url)
-                        embed.add_field(name="User", "value": member.mention, "inline": False)
+                        embed.add_field(name="User", "value": member.mention, inline=False)
                         if user_data.get('last_message'):
                             embed.add_field(name="Last Message", "value": user_data['last_message'].get('content', 'N/A')[:100], "inline": False)
                         await tracking_channel.send(embed=embed)
