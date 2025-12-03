@@ -1173,8 +1173,7 @@ async def tdm(ctx):
 
 @bot.command(name='sping')
 async def sping(ctx):
-    if not has_mod_role(ctx.author):
-        return
+    # Removed the moderator check - anyone can use this now
     
     await ctx.message.delete()
     
@@ -1220,8 +1219,7 @@ async def sping(ctx):
 
 @bot.command(name='hsping')
 async def hsping(ctx):
-    if not has_mod_role(ctx.author):
-        return
+    # Removed the moderator check - anyone can use this now
     
     await ctx.message.delete()
     
