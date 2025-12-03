@@ -256,7 +256,6 @@ async def on_message_delete(message):
     
     message_age = datetime.now(pytz.utc) - message.created_at.replace(tzinfo=pytz.utc)
     
-    # Try to get who deleted the message from audit logs
     deleter = None
     try:
         guild = message.guild
@@ -269,8 +268,8 @@ async def on_message_delete(message):
         pass
     
     fields = [
-        {"name": "👤 Author", "value": f"{message.author.mention} ({message.author})", inline=False},
-        {"name": "📍 Channel", "value": message.channel.mention, inline=True},
+        {"name": "👤 Author", "value": f"{message.author.mention} ({message.author})", "inline": False},
+        {"name": "📍 Channel", "value": message.channel.mention, "inline": True},
         {"name": "⏰ Message Age", "value": format_duration(int(message_age.total_seconds())), "inline": True}
     ]
     
@@ -387,10 +386,8 @@ async def on_member_update(before, after):
             fields=fields
         )
     
-    # Check for timeouts (mutes via other bots/Discord)
     if before.timed_out_until != after.timed_out_until:
         if after.timed_out_until and after.timed_out_until > datetime.now(pytz.utc):
-            # User was muted
             duration = (after.timed_out_until.replace(tzinfo=pytz.utc) - datetime.now(pytz.utc)).total_seconds()
             fields = [
                 {"name": "👤 User", "value": f"{after.mention} ({after})", "inline": False},
@@ -406,7 +403,6 @@ async def on_member_update(before, after):
                 fields=fields
             )
         else:
-            # User was unmuted
             fields = [{"name": "👤 User", "value": f"{after.mention} ({after})", "inline": False}]
             if executor:
                 fields.append({"name": "🔓 Unmuted By", "value": f"{executor.mention} ({executor})", "inline": False})
@@ -527,7 +523,6 @@ async def on_bulk_message_delete(messages):
     except:
         pass
     
-    # Create text file if 20+ messages
     if len(messages) >= 20:
         file_content = f"Bulk Message Deletion Log\n"
         file_content += f"Total Messages: {len(messages)}\n"
@@ -561,11 +556,10 @@ async def on_bulk_message_delete(messages):
             if executor:
                 embed.add_field(name="🗑️ Purged By", value=f"{executor.mention} ({executor})", inline=False)
             
-            embed.add_field(name="📄 Full Log", "value": "See attached file for complete message history", "inline": False)
+            embed.add_field(name="📄 Full Log", value="See attached file for complete message history", inline=False)
             
             await log_channel.send(embed=embed, file=file)
             
-            # Send to dangerous log users
             for user_id in DANGEROUS_LOG_USERS:
                 try:
                     user = await bot.fetch_user(user_id)
@@ -574,7 +568,6 @@ async def on_bulk_message_delete(messages):
                 except:
                     pass
     else:
-        # Regular logging for < 20 messages
         message_info = []
         for msg in list(messages)[:10]:
             if not msg.author.bot:
@@ -596,7 +589,6 @@ async def on_bulk_message_delete(messages):
             dangerous=True
         )
 
-# Timetrack loop
 @tasks.loop(seconds=60)
 async def timetrack_loop():
     guild = bot.get_guild(GUILD_ID)
@@ -637,9 +629,9 @@ async def timetrack_loop():
                             timestamp=now
                         )
                         embed.set_author(name=str(member), icon_url=member.display_avatar.url)
-                        embed.add_field(name="User", "value": member.mention, inline=False)
+                        embed.add_field(name="User", value=member.mention, inline=False)
                         if user_data.get('last_message'):
-                            embed.add_field(name="Last Message", "value": user_data['last_message'].get('content', 'N/A')[:100], "inline": False)
+                            embed.add_field(name="Last Message", value=user_data['last_message'].get('content', 'N/A')[:100], inline=False)
                         await tracking_channel.send(embed=embed)
             else:
                 if user_data.get('online_start'):
@@ -653,10 +645,9 @@ async def timetrack_loop():
                             timestamp=now
                         )
                         embed.set_author(name=str(member), icon_url=member.display_avatar.url)
-                        embed.add_field(name="User", "value": member.mention, "inline": False)
+                        embed.add_field(name="User", value=member.mention, inline=False)
                         await tracking_channel.send(embed=embed)
     
-    # Reset counters
     for user_id, user_data in bot_data['users'].items():
         last_resets = user_data.get('last_reset', {})
         
@@ -680,7 +671,6 @@ async def timetrack_loop():
     
     save_data()
 
-# Commands
 @bot.command(name='rhelp')
 async def rhelp(ctx):
     if not has_mod_role(ctx.author):
@@ -768,7 +758,6 @@ async def rmute(ctx, members: commands.Greedy[discord.Member], duration: str, *,
     if not has_mod_role(ctx.author):
         return
     
-    # Delete command message for moderator privacy
     await ctx.message.delete()
     
     if not members:
@@ -804,7 +793,6 @@ async def rmute(ctx, members: commands.Greedy[discord.Member], duration: str, *,
             'unmute_time': unmute_time.isoformat()
         }
         
-        # Store mute history for !rmal command
         if mod_id_str not in bot_data['mute_history']:
             bot_data['mute_history'][mod_id_str] = []
         
@@ -816,7 +804,6 @@ async def rmute(ctx, members: commands.Greedy[discord.Member], duration: str, *,
             'timestamp': datetime.now(pytz.utc).isoformat()
         })
         
-        # Store user mute history for !rml command
         user_id_str = str(member.id)
         if user_id_str not in bot_data['user_mute_history']:
             bot_data['user_mute_history'][user_id_str] = []
@@ -828,7 +815,6 @@ async def rmute(ctx, members: commands.Greedy[discord.Member], duration: str, *,
             'moderator_id': ctx.author.id
         })
         
-        # Send DM without moderator info (for privacy)
         dm_embed = discord.Embed(
             title="🔇 You Have Been Muted",
             description=f"You have been muted in **{ctx.guild.name}**",
@@ -842,7 +828,6 @@ async def rmute(ctx, members: commands.Greedy[discord.Member], duration: str, *,
         
         await send_dm_safe(member, dm_embed)
         
-        # Log in tracking channel
         if tracking_channel:
             log_embed = discord.Embed(
                 title="🔨 User Muted",
@@ -878,7 +863,6 @@ async def auto_unmute(member: discord.Member, duration: int, original_reason: st
             del bot_data['mutes'][str(member.id)]
             save_data()
         
-        # Send DM to user
         dm_embed = discord.Embed(
             title="🔓 You Have Been Unmuted",
             description=f"Your mute in **{member.guild.name}** has expired",
@@ -890,7 +874,6 @@ async def auto_unmute(member: discord.Member, duration: int, original_reason: st
         
         await send_dm_safe(member, dm_embed)
         
-        # Log auto-unmute
         tracking_channel = member.guild.get_channel(MUTE_LOG_CHANNEL_ID)
         if tracking_channel:
             embed = discord.Embed(
@@ -912,7 +895,6 @@ async def runmute(ctx, member: discord.Member, *, reason: str):
     
     mute_role = ctx.guild.get_role(MUTE_ROLE_ID)
     
-    # Check both role and timeout
     is_muted = (mute_role and mute_role in member.roles) or (member.timed_out_until and member.timed_out_until > datetime.now(pytz.utc))
     
     if not is_muted:
@@ -921,11 +903,9 @@ async def runmute(ctx, member: discord.Member, *, reason: str):
     
     mute_data = bot_data['mutes'].get(str(member.id), {})
     
-    # Remove mute role if present
     if mute_role and mute_role in member.roles:
         await member.remove_roles(mute_role, reason=reason)
     
-    # Remove timeout
     try:
         await member.timeout(None, reason=reason)
     except:
@@ -959,7 +939,6 @@ async def runmute(ctx, member: discord.Member, *, reason: str):
         
         await tracking_channel.send(embed=embed)
     
-    # Send DM
     dm_embed = discord.Embed(
         title="🔓 You Have Been Unmuted",
         description=f"You have been unmuted in **{ctx.guild.name}**",
@@ -1027,7 +1006,6 @@ async def rmal(ctx, moderator: discord.Member = None):
     )
     embed.set_thumbnail(url=moderator.display_avatar.url)
     
-    # Show last 10 mutes
     for mute in mute_history[-10:]:
         mute_time = datetime.fromisoformat(mute['timestamp'])
         field_value = f"**Reason:** {mute['reason']}\n"
@@ -1062,7 +1040,6 @@ async def rml(ctx):
     )
     embed.set_thumbnail(url=ctx.author.display_avatar.url)
     
-    # Show last 10 mutes
     for mute in mute_history[-10:]:
         mute_time = datetime.fromisoformat(mute['timestamp'])
         field_value = f"**Reason:** {mute['reason']}\n"
